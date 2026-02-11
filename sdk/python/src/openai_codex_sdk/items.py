@@ -3,9 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping, TypeAlias
 
-CommandExecutionStatus: TypeAlias = Literal["in_progress", "completed", "failed"]
+CommandExecutionStatus: TypeAlias = Literal["in_progress", "completed", "failed", "declined"]
 PatchChangeKind: TypeAlias = Literal["add", "delete", "update"]
-PatchApplyStatus: TypeAlias = Literal["completed", "failed"]
+PatchApplyStatus: TypeAlias = Literal["in_progress", "completed", "failed", "declined"]
 McpToolCallStatus: TypeAlias = Literal["in_progress", "completed", "failed"]
 
 
@@ -141,7 +141,7 @@ def parse_thread_item(raw: Mapping[str, Any]) -> ThreadItem:
         return FileChangeItem(
             id=str(raw.get("id", "")),
             changes=changes,
-            status=str(raw.get("status", "failed")),  # type: ignore[arg-type]
+            status=str(raw.get("status", "in_progress")),  # type: ignore[arg-type]
         )
     if item_type == "mcp_tool_call":
         result: McpToolCallResult | None = None
