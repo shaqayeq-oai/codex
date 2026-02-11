@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -65,18 +66,24 @@ class FakeProcess:
 
 
 @pytest.mark.asyncio
-async def test_exec_builds_expected_args_and_env(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_exec_uses_app_server_jsonrpc_and_env(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
+    process = FakeProcess(
+        [
+            '{"id":1,"result":{"userAgent":"codex"}}',
+            '{"id":2,"result":{"thread":{"id":"thread_1"}}}',
+            '{"id":3,"result":{"turn":{"id":"turn_1"}}}',
+            '{"method":"turn/started","params":{"threadId":"thread_1","turn":{"id":"turn_1","status":"inProgress"}}}',
+            '{"method":"item/completed","params":{"threadId":"thread_1","turnId":"turn_1","item":{"type":"agentMessage","id":"item_1","text":"Hi!"}}}',
+            '{"method":"thread/tokenUsage/updated","params":{"threadId":"thread_1","turnId":"turn_1","tokenUsage":{"last":{"inputTokens":1,"cachedInputTokens":0,"outputTokens":2}}}}',
+            '{"method":"turn/completed","params":{"threadId":"thread_1","turn":{"id":"turn_1","status":"completed"}}}',
+        ]
+    )
 
     async def fake_create_subprocess_exec(*cmd, **kwargs):  # noqa: ANN001
         captured["cmd"] = cmd
         captured["kwargs"] = kwargs
-        return FakeProcess(
-            [
-                '{"type":"thread.started","thread_id":"thread_1"}',
-                '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}',
-            ]
-        )
+        return process
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
 
@@ -90,38 +97,37 @@ async def test_exec_builds_expected_args_and_env(monkeypatch: pytest.MonkeyPatch
         base_url="https://api.example.com",
         api_key="test-key",
         thread_id="thread_1",
-        images=["/tmp/a.png"],
         model="gpt-test",
         sandbox_mode="workspace-write",
         working_directory="/tmp/repo",
-        additional_directories=["/tmp/shared-a", "/tmp/shared-b"],
-        skip_git_repo_check=True,
-        output_schema_file="/tmp/schema.json",
+        additional_directories=["/tmp/shared-a"],
         model_reasoning_effort="high",
         network_access_enabled=True,
         web_search_mode="cached",
         approval_policy="on-request",
+        output_schema={"type": "object", "properties": {"answer": {"type": "string"}}},
     )
 
     lines = [line async for line in exec_client.run(args)]
+    events = [json.loads(line) for line in lines]
 
-    assert len(lines) == 2
+    assert [event["type"] for event in events] == [
+        "thread.started",
+        "turn.started",
+        "item.completed",
+        "turn.completed",
+    ]
+    assert events[-1]["usage"] == {
+        "input_tokens": 1,
+        "cached_input_tokens": 0,
+        "output_tokens": 2,
+    }
+
     cmd = list(captured["cmd"])  # type: ignore[arg-type]
     assert cmd[0] == "codex-bin"
     arg_list = cmd[1:]
-
-    assert "--experimental-json" in arg_list
-    assert "--model" in arg_list
-    assert "--sandbox" in arg_list
-    assert "--cd" in arg_list
-    assert "--skip-git-repo-check" in arg_list
-    assert "--output-schema" in arg_list
-    assert "resume" in arg_list
-    assert "--image" in arg_list
-
-    resume_index = arg_list.index("resume")
-    image_index = arg_list.index("--image")
-    assert resume_index < image_index
+    assert "app-server" in arg_list
+    assert "exec" not in arg_list
 
     kwargs = captured["kwargs"]  # type: ignore[assignment]
     env = kwargs["env"]  # type: ignore[index]
@@ -130,16 +136,24 @@ async def test_exec_builds_expected_args_and_env(monkeypatch: pytest.MonkeyPatch
     assert env["CODEX_API_KEY"] == "test-key"  # type: ignore[index]
     assert env["CODEX_INTERNAL_ORIGINATOR_OVERRIDE"] == "codex_sdk_py"  # type: ignore[index]
 
+    sent_messages = [json.loads(line) for line in process.stdin.data.decode("utf-8").splitlines()]
+    assert sent_messages[0]["method"] == "initialize"
+    assert sent_messages[1]["method"] == "initialized"
+    assert sent_messages[2]["method"] == "thread/resume"
+    assert sent_messages[3]["method"] == "turn/start"
+
 
 @pytest.mark.asyncio
-async def test_exec_raises_on_nonzero_exit(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_exec_raises_on_rpc_error(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_create_subprocess_exec(*_cmd, **_kwargs):  # noqa: ANN001
-        return FakeProcess(stdout_lines=[], stderr_text="boom", returncode=2)
+        return FakeProcess(
+            stdout_lines=['{"id":1,"error":{"code":-32000,"message":"not initialized"}}']
+        )
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
 
     exec_client = CodexExec(executable_path="codex-bin")
-    with pytest.raises(RuntimeError, match="Codex Exec exited with code 2: boom"):
+    with pytest.raises(RuntimeError, match="not initialized"):
         async for _ in exec_client.run(CodexExecArgs(input="hello")):
             pass
 

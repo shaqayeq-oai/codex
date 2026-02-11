@@ -2,8 +2,7 @@
 
 Embed the Codex agent in Python workflows and apps.
 
-The Python SDK wraps the bundled `codex` binary. It spawns the CLI and exchanges JSONL events
-over stdin/stdout.
+The Python SDK uses `codex app-server` and speaks JSON-RPC over stdio. It does not use `codex exec`.
 
 ## Installation (local development)
 
@@ -52,8 +51,7 @@ async for event in streamed.events:
 
 ## Structured output
 
-Pass `output_schema` in `TurnOptions`; the SDK writes a temporary schema file and forwards it via
-`--output-schema`.
+Pass `output_schema` in `TurnOptions`; the SDK forwards it to `turn/start.outputSchema`.
 
 ```python
 from openai_codex_sdk import Codex, TurnOptions
@@ -99,19 +97,19 @@ await thread.run("Continue from here.")
 
 ## Working directory controls
 
-Codex runs in the current working directory by default. To bypass the default Git repo trust check,
-set `skip_git_repo_check` in thread options.
+Use thread options to set model, sandbox mode, and working directory defaults.
 
 ```python
 thread = codex.start_thread(
     {
+        "model": "gpt-5-codex",
+        "sandbox_mode": "workspace-write",
         "working_directory": "/path/to/project",
-        "skip_git_repo_check": True,
     }
 )
 ```
 
-## Controlling environment and config overrides
+## Environment and config overrides
 
 By default, the SDK inherits `os.environ`. Set `env` in `CodexOptions` to provide a full
 environment override.
@@ -127,3 +125,8 @@ codex = Codex(
     }
 )
 ```
+
+## Approval behavior
+
+When app-server asks for command/file-change approvals, this prototype SDK auto-accepts those
+approval requests to keep non-interactive runs moving.

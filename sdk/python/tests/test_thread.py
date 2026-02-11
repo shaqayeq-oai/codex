@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -158,18 +157,8 @@ async def test_second_run_uses_existing_thread_and_images() -> None:
 
 
 @pytest.mark.asyncio
-async def test_output_schema_file_is_cleaned_after_run() -> None:
-    schema_paths: list[str] = []
-
-    class SchemaInspectingExec(FakeExec):
-        async def run(self, args):  # noqa: ANN001
-            if args.output_schema_file is not None:
-                schema_paths.append(args.output_schema_file)
-                assert Path(args.output_schema_file).exists()
-            async for line in super().run(args):
-                yield line
-
-    fake_exec = SchemaInspectingExec(
+async def test_output_schema_passes_through_to_exec_args() -> None:
+    fake_exec = FakeExec(
         [
             [
                 {"type": "thread.started", "thread_id": "thread_1"},
@@ -198,8 +187,8 @@ async def test_output_schema_file_is_cleaned_after_run() -> None:
     schema = {"type": "object", "properties": {"summary": {"type": "string"}}}
     await thread.run("structured", TurnOptions(output_schema=schema))
 
-    assert len(schema_paths) == 1
-    assert not Path(schema_paths[0]).exists()
+    assert len(fake_exec.calls) == 1
+    assert fake_exec.calls[0].output_schema == schema
 
 
 @pytest.mark.asyncio

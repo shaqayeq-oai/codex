@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Mapping
 
 from .events import (
@@ -25,7 +25,6 @@ from .options import (
     UserInput,
     coerce_turn_options,
 )
-from .output_schema_file import create_output_schema_file
 
 
 @dataclass(slots=True)
@@ -64,42 +63,38 @@ class Thread:
         turn_options: TurnOptions | Mapping[str, Any] | None = None,
     ) -> AsyncGenerator[ThreadEvent, None]:
         options = coerce_turn_options(turn_options)
-        schema_file = await create_output_schema_file(options.output_schema)
-        try:
-            prompt, images = normalize_input(input)
-            exec_args = CodexExecArgs(
-                input=prompt,
-                base_url=self._options.base_url,
-                api_key=self._options.api_key,
-                thread_id=self._id,
-                images=images,
-                model=self._thread_options.model,
-                sandbox_mode=self._thread_options.sandbox_mode,
-                working_directory=self._thread_options.working_directory,
-                additional_directories=self._thread_options.additional_directories,
-                skip_git_repo_check=self._thread_options.skip_git_repo_check,
-                output_schema_file=schema_file.schema_path,
-                model_reasoning_effort=self._thread_options.model_reasoning_effort,
-                signal=options.signal,
-                network_access_enabled=self._thread_options.network_access_enabled,
-                web_search_mode=self._thread_options.web_search_mode,
-                web_search_enabled=self._thread_options.web_search_enabled,
-                approval_policy=self._thread_options.approval_policy,
-            )
+        prompt, images = normalize_input(input)
+        exec_args = CodexExecArgs(
+            input=prompt,
+            base_url=self._options.base_url,
+            api_key=self._options.api_key,
+            thread_id=self._id,
+            images=images,
+            model=self._thread_options.model,
+            sandbox_mode=self._thread_options.sandbox_mode,
+            working_directory=self._thread_options.working_directory,
+            additional_directories=self._thread_options.additional_directories,
+            skip_git_repo_check=self._thread_options.skip_git_repo_check,
+            output_schema=options.output_schema,
+            model_reasoning_effort=self._thread_options.model_reasoning_effort,
+            signal=options.signal,
+            network_access_enabled=self._thread_options.network_access_enabled,
+            web_search_mode=self._thread_options.web_search_mode,
+            web_search_enabled=self._thread_options.web_search_enabled,
+            approval_policy=self._thread_options.approval_policy,
+        )
 
-            async for line in self._exec.run(exec_args):
-                try:
-                    raw_event = json.loads(line)
-                except json.JSONDecodeError as error:
-                    raise RuntimeError(f"Failed to parse event line: {line}") from error
-                if not isinstance(raw_event, Mapping):
-                    raise RuntimeError(f"Unexpected non-object event: {raw_event!r}")
-                event = parse_thread_event(raw_event)
-                if isinstance(event, ThreadStartedEvent):
-                    self._id = event.thread_id
-                yield event
-        finally:
-            await schema_file.cleanup()
+        async for line in self._exec.run(exec_args):
+            try:
+                raw_event = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise RuntimeError(f"Failed to parse event line: {line}") from error
+            if not isinstance(raw_event, Mapping):
+                raise RuntimeError(f"Unexpected non-object event: {raw_event!r}")
+            event = parse_thread_event(raw_event)
+            if isinstance(event, ThreadStartedEvent):
+                self._id = event.thread_id
+            yield event
 
     async def run(
         self,
