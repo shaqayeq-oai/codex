@@ -68,6 +68,10 @@ class CodexExec:
     async def run(self, args: CodexExecArgs) -> AsyncGenerator[str, None]:
         if args.signal is not None and args.signal.is_set():
             raise asyncio.CancelledError("Codex execution aborted before start")
+        if args.skip_git_repo_check:
+            raise RuntimeError(
+                "skip_git_repo_check is not supported by the app-server transport."
+            )
 
         command_args = self._build_command_args()
         env = self._build_env(args)
@@ -140,7 +144,6 @@ class CodexExec:
             )
             request_id += 1
             thread_id = _extract_thread_id(thread_response, thread_method)
-            pending_events.append({"type": "thread.started", "thread_id": thread_id})
 
             await _send_message(
                 process.stdin,
@@ -283,13 +286,53 @@ class CodexExec:
             )
             return
 
+        if method == "item/tool/call":
+            await _send_message(
+                stdin,
+                {
+                    "id": request_id,
+                    "result": {
+                        "contentItems": [
+                            {
+                                "type": "inputText",
+                                "text": (
+                                    "Dynamic tool calls are not supported by openai_codex_sdk "
+                                    "yet."
+                                ),
+                            }
+                        ],
+                        "success": False,
+                    },
+                },
+            )
+            return
+
+        if method == "account/chatgptAuthTokens/refresh":
+            await _send_message(
+                stdin,
+                {
+                    "id": request_id,
+                    "error": {
+                        "code": -32000,
+                        "message": (
+                            "Token refresh is not implemented in openai_codex_sdk. "
+                            "Refresh credentials outside the SDK and retry."
+                        ),
+                    },
+                },
+            )
+            return
+
         await _send_message(
             stdin,
             {
                 "id": request_id,
                 "error": {
-                    "code": -32601,
-                    "message": f"Unsupported server request method: {method}",
+                    "code": -32000,
+                    "message": (
+                        "Unsupported server request method for openai_codex_sdk: "
+                        f"{method}"
+                    ),
                 },
             },
         )
@@ -355,9 +398,6 @@ class CodexExec:
             config["web_search"] = "live"
         elif args.web_search_enabled is False:
             config["web_search"] = "disabled"
-
-        if args.skip_git_repo_check:
-            config["skip_git_repo_check"] = True
 
         return config
 
@@ -618,13 +658,17 @@ def _normalize_item(raw: Mapping[str, Any]) -> dict[str, Any] | None:
 def _normalize_command_status(status: str) -> str:
     if status == "inProgress":
         return "in_progress"
-    return status if status else "in_progress"
+    if status in {"completed", "failed", "declined"}:
+        return status
+    return "in_progress"
 
 
 def _normalize_patch_status(status: str) -> str:
-    if status == "completed":
-        return "completed"
-    return "failed"
+    if status == "inProgress":
+        return "in_progress"
+    if status in {"completed", "failed", "declined"}:
+        return status
+    return "in_progress"
 
 
 def _normalize_patch_kind(kind: str) -> str:

@@ -112,7 +112,6 @@ async def test_exec_uses_app_server_jsonrpc_and_env(monkeypatch: pytest.MonkeyPa
     events = [json.loads(line) for line in lines]
 
     assert [event["type"] for event in events] == [
-        "thread.started",
         "turn.started",
         "item.completed",
         "turn.completed",
@@ -141,6 +140,142 @@ async def test_exec_uses_app_server_jsonrpc_and_env(monkeypatch: pytest.MonkeyPa
     assert sent_messages[1]["method"] == "initialized"
     assert sent_messages[2]["method"] == "thread/resume"
     assert sent_messages[3]["method"] == "turn/start"
+
+
+@pytest.mark.asyncio
+async def test_exec_emits_thread_started_once_for_thread_start_notification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = FakeProcess(
+        [
+            '{"id":1,"result":{"userAgent":"codex"}}',
+            '{"id":2,"result":{"thread":{"id":"thread_1"}}}',
+            '{"id":3,"result":{"turn":{"id":"turn_1"}}}',
+            '{"method":"thread/started","params":{"thread":{"id":"thread_1"}}}',
+            '{"method":"turn/started","params":{"threadId":"thread_1","turn":{"id":"turn_1","status":"inProgress"}}}',
+            '{"method":"turn/completed","params":{"threadId":"thread_1","turn":{"id":"turn_1","status":"completed"}}}',
+        ]
+    )
+
+    async def fake_create_subprocess_exec(*_cmd, **_kwargs):  # noqa: ANN001
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    exec_client = CodexExec(executable_path="codex-bin")
+    events = [json.loads(line) async for line in exec_client.run(CodexExecArgs(input="hello"))]
+    event_types = [event["type"] for event in events]
+
+    assert event_types == ["thread.started", "turn.started", "turn.completed"]
+    assert event_types.count("thread.started") == 1
+
+
+@pytest.mark.asyncio
+async def test_exec_maps_file_change_in_progress_and_declined_statuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = FakeProcess(
+        [
+            '{"id":1,"result":{"userAgent":"codex"}}',
+            '{"id":2,"result":{"thread":{"id":"thread_1"}}}',
+            '{"id":3,"result":{"turn":{"id":"turn_1"}}}',
+            '{"method":"thread/started","params":{"thread":{"id":"thread_1"}}}',
+            '{"method":"turn/started","params":{"threadId":"thread_1","turn":{"id":"turn_1","status":"inProgress"}}}',
+            '{"method":"item/started","params":{"threadId":"thread_1","turnId":"turn_1","item":{"type":"fileChange","id":"item_1","status":"inProgress","changes":[{"path":"a.py","kind":"update"}]}}}',
+            '{"method":"item/completed","params":{"threadId":"thread_1","turnId":"turn_1","item":{"type":"fileChange","id":"item_1","status":"declined","changes":[{"path":"a.py","kind":"update"}]}}}',
+            '{"method":"turn/completed","params":{"threadId":"thread_1","turn":{"id":"turn_1","status":"completed"}}}',
+        ]
+    )
+
+    async def fake_create_subprocess_exec(*_cmd, **_kwargs):  # noqa: ANN001
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    exec_client = CodexExec(executable_path="codex-bin")
+    events = [json.loads(line) async for line in exec_client.run(CodexExecArgs(input="hello"))]
+
+    started_item = next(
+        event["item"] for event in events if event["type"] == "item.started"
+    )
+    completed_item = next(
+        event["item"] for event in events if event["type"] == "item.completed"
+    )
+
+    assert started_item["type"] == "file_change"
+    assert started_item["status"] == "in_progress"
+    assert completed_item["type"] == "file_change"
+    assert completed_item["status"] == "declined"
+
+
+@pytest.mark.asyncio
+async def test_exec_handles_dynamic_tool_request_with_failure_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = FakeProcess(
+        [
+            '{"id":1,"result":{"userAgent":"codex"}}',
+            '{"id":2,"result":{"thread":{"id":"thread_1"}}}',
+            '{"id":3,"result":{"turn":{"id":"turn_1"}}}',
+            '{"id":91,"method":"item/tool/call","params":{"threadId":"thread_1","turnId":"turn_1","callId":"call_1","tool":"demo","arguments":{}}}',
+            '{"method":"turn/completed","params":{"threadId":"thread_1","turn":{"id":"turn_1","status":"completed"}}}',
+        ]
+    )
+
+    async def fake_create_subprocess_exec(*_cmd, **_kwargs):  # noqa: ANN001
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    exec_client = CodexExec(executable_path="codex-bin")
+    _ = [line async for line in exec_client.run(CodexExecArgs(input="hello", thread_id="thread_1"))]
+    sent_messages = [json.loads(line) for line in process.stdin.data.decode("utf-8").splitlines()]
+
+    dynamic_tool_response = next(message for message in sent_messages if message.get("id") == 91)
+    assert dynamic_tool_response["result"]["success"] is False
+    assert dynamic_tool_response["result"]["contentItems"][0]["type"] == "inputText"
+
+
+@pytest.mark.asyncio
+async def test_exec_uses_generic_error_for_unknown_server_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = FakeProcess(
+        [
+            '{"id":1,"result":{"userAgent":"codex"}}',
+            '{"id":2,"result":{"thread":{"id":"thread_1"}}}',
+            '{"id":3,"result":{"turn":{"id":"turn_1"}}}',
+            '{"id":77,"method":"item/unknown","params":{}}',
+            '{"method":"turn/completed","params":{"threadId":"thread_1","turn":{"id":"turn_1","status":"completed"}}}',
+        ]
+    )
+
+    async def fake_create_subprocess_exec(*_cmd, **_kwargs):  # noqa: ANN001
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    exec_client = CodexExec(executable_path="codex-bin")
+    _ = [
+        line
+        async for line in exec_client.run(CodexExecArgs(input="hello", thread_id="thread_1"))
+    ]
+    sent_messages = [json.loads(line) for line in process.stdin.data.decode("utf-8").splitlines()]
+
+    unknown_response = next(message for message in sent_messages if message.get("id") == 77)
+    assert unknown_response["error"]["code"] == -32000
+    assert "item/unknown" in unknown_response["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_exec_rejects_skip_git_repo_check_in_app_server_mode() -> None:
+    exec_client = CodexExec(executable_path="codex-bin")
+    with pytest.raises(
+        RuntimeError,
+        match="skip_git_repo_check is not supported by the app-server transport",
+    ):
+        async for _ in exec_client.run(CodexExecArgs(input="hello", skip_git_repo_check=True)):
+            pass
 
 
 @pytest.mark.asyncio

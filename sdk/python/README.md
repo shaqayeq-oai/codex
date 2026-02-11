@@ -109,6 +109,9 @@ thread = codex.start_thread(
 )
 ```
 
+`skip_git_repo_check` is an exec-transport flag and is not available via `app-server`; this
+SDK raises an error if you set it.
+
 ## Environment and config overrides
 
 By default, the SDK inherits `os.environ`. Set `env` in `CodexOptions` to provide a full
